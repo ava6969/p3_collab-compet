@@ -1,12 +1,13 @@
 
 from unityagents import UnityEnvironment
 import numpy as np
-from MADPG import MADPG
 from collections import deque
 import matplotlib.pyplot as plt
 
+from MADDPG import MADDPG
+
 seed = 4
-env = UnityEnvironment(file_name="Tennis",seed=seed)
+env = UnityEnvironment(file_name="Tennis", seed=seed, worker_id=2)
 
 # get the default brain
 brain_name = env.brain_names[0]
@@ -21,77 +22,99 @@ states = env_info.vector_observations
 state_size = states.shape[1]
 
 
-print_every = 500
-save_every = 500
-agent = MADPG(state_size, num_agents, action_size, seed)
+MAX_EPISODES = 5000
+SOLVED_SCORE = 0.5    # FOR TESTING ONLY - should be 0.5
+WINDOW_SIZE = 100       # FOR TESTING ONLY - should be 100
+PRINT_EVERY = 10
+ADD_NOISE = True
+STOP_IF_NO_IMPROVEMENT_OVER_EPISODES = 300
+RAND_SEED = 6
 
-scores_max_hist = []
-scores_mean_hist = []
+agents = MADDPG(num_agents, state_size, action_size, seed)
 
 
-def train(n_episodes=10000, max_t=1000, eps_start=1.0, eps_end=0.1, eps_decay=0.000001):
-    """DPG.
-    
-    Params
-    ======
-        n_episodes (int): maximum number of training episodes
-        max_t (int): maximum number of timesteps per episode
-        eps_start (float): starting value of epsilon, for epsilon-greedy action selection
-        eps_end (float): minimum value of epsilon
-        eps_decay (float): multiplicative factor (per episode) for decreasing epsilon
-    """
+def maddpg():
+    # initialize scores
+    scores_window = deque(maxlen=WINDOW_SIZE)
+    scores_all = []
+    moving_average = []
+    best_score = -np.inf
+    best_episode = 0
+    env_solved = False
 
-    scores_window = deque(maxlen=print_every)  # last 5 scores
-    eps = eps_start                    # initialize epsilon
-    
-    for i_episode in range(1, n_episodes+1):
-        env_info = env.reset(train_mode=True)[brain_name] # reset the environment
-        states = env_info.vector_observations          # get the current state
-        agent.reset()
+    for i_episode in range(1, MAX_EPISODES + 1):
+        env_info = env.reset(train_mode=True)[brain_name]  # reset the environment
+        states = np.reshape(env_info.vector_observations, (1, num_agents * state_size))  # flatten states
+        agents.reset()
         scores = np.zeros(num_agents)
-        
-        for t in range(max_t):
-            actions = agent.act(states, eps)
-            env_info = env.step(actions)[brain_name]        # send the action to the environment
-            next_states = env_info.vector_observations
-            rewards = env_info.rewards
-            dones = env_info.local_done
-            scores += rewards
-            samples = states, actions, rewards, next_states, dones
-            agent.update_all(t, samples)
-            states = next_states
-
-            if np.any(dones):
+        while True:
+            actions = agents.act(states, ADD_NOISE)  # choose agent actions and flatten them
+            env_info = env.step(actions)[brain_name]  # send both agents' actions to the environment
+            next_states = np.reshape(env_info.vector_observations, (1, num_agents * state_size))  # flatten next states
+            rewards = env_info.rewards  # get rewards
+            done = env_info.local_done  # see if the episode finished
+            agents.step(states, actions, rewards, next_states, done)  # perform the learning step
+            scores += np.max(rewards)  # update scores with best reward
+            states = next_states  # roll over states to next time step
+            if np.any(done):  # exit loop if episode finished
                 break
 
-        score_max = np.max(scores)
-        scores_window.append(score_max)
-        score_mean = np.mean(scores_window)
+        ep_best_score = np.max(scores)  # record best score for episode
+        scores_window.append(ep_best_score)  # add score to recent scores
+        scores_all.append(ep_best_score)  # add score to history of all scores
+        moving_average.append(np.mean(scores_window))  # recalculate moving average
 
-        scores_max_hist.append(score_max)
-        scores_mean_hist.append(score_mean)
-        eps = max(eps_end, eps-eps_decay) # decrease epsilon
+        # save best score
+        if ep_best_score > best_score and ep_best_score > 0:
+            best_score = ep_best_score
+            best_episode = i_episode
+            print('New best score found on episode {:d}; score = {:.3f}'.format(best_episode, best_score))
 
-        if i_episode % print_every == 0:
-            print('\rEpisode {}\tAverage Score: {:.5f}, Max Scored: {:.5f}'
-                  .format(i_episode, np.mean(scores_window), score_max))
+        # print results
+        if i_episode % PRINT_EVERY == 0:
+            print('Episodes {:0>4d}-{:0>4d}\tMax Reward: {:.3f}\tMoving Average: {:.3f}'.format(
+                i_episode - PRINT_EVERY, i_episode, np.max(scores_all[-PRINT_EVERY:]), moving_average[-1]))
+            agents.save()
 
-        if i_episode % save_every == 0:
-            agent.save()
+        # determine if environment is solved and keep best performing models
+        if moving_average[-1] >= SOLVED_SCORE:
+            if not env_solved:
+                print('<<< Environment solved in {:d} episodes! \
+                \n<<< Moving Average: {:.3f} over past {:d} episodes'.format(
+                    i_episode - WINDOW_SIZE, moving_average[-1], WINDOW_SIZE))
+                env_solved = True
 
-        if np.mean(scores_window) >= 30.0:
-            print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.5f}'.format(i_episode-save_every, np.mean(scores_window)))
-            agent.save()
-            break
+                # save weights
+                agents.save()
+                break
+
+            elif ep_best_score >= best_score:
+                print('<<< Best episode so far!\
+                \nEpisode {:0>4d}\tMax Reward: {:.3f}\tMoving Average: {:.3f}'.format(
+                    i_episode, ep_best_score, moving_average[-1]))
+
+                # save weights
+                agents.save()
+
+            # stop training if model stops improving
+            elif (i_episode - best_episode) >= STOP_IF_NO_IMPROVEMENT_OVER_EPISODES:
+                print('<-- Training stopped. Best score not matched or exceeded for',
+                      STOP_IF_NO_IMPROVEMENT_OVER_EPISODES, 'episodes')
+                break
+            else:
+                continue
+
+    return scores_all, moving_average
 
 
-train()
-fig = plt.figure()
-ax = fig.add_subplot(111)
-plt.plot(np.arange(1, len(scores_max_hist)+1), scores_max_hist, label='score')
-plt.plot(np.arange(1, len(scores_mean_hist)+1), scores_mean_hist, label='average score')
+scores, avgs = maddpg()
+
+plt.figure()
+plt.plot(scores, label='MADDPG')
+plt.plot(avgs, c='r', label='moving avg')
 plt.ylabel('Score')
-plt.xlabel('Episode #')
+plt.xlabel('Episode')
 plt.legend(loc='upper left')
+plt.show()
 plt.show()
 env.close()

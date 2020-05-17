@@ -1,23 +1,36 @@
+import random
 import numpy as np
-import torch
+import copy
+
+OU_SIGMA = 0.5          # Ornstein-Uhlenbeck noise parameter, volatility
+OU_THETA = 0.15         # Ornstein-Uhlenbeck noise parameter, speed of mean reversion
 
 
 class OUNoise:
+    """Ornstein-Uhlenbeck process."""
 
-    def __init__(self, action_dimension, scale=0.1, mu=0, theta=0.15, sigma=0.2):
-        self.action_dimension = action_dimension
-        self.scale = scale
-        self.mu = mu
+    def __init__(self, size, seed, mu=0.0, theta=OU_THETA, sigma=OU_SIGMA):
+        """Initialize parameters and noise process.
+        Params
+        ======
+            mu (float)    : long-running mean
+            theta (float) : speed of mean reversion
+            sigma (float) : volatility parameter
+        """
+        self.mu = mu * np.ones(size)
         self.theta = theta
         self.sigma = sigma
-        self.state = np.ones(self.action_dimension) * self.mu
+        self.seed = random.seed(seed)
+        self.size = size
         self.reset()
 
     def reset(self):
-        self.state = np.ones(self.action_dimension) * self.mu
+        """Reset the internal state (= noise) to mean (mu)."""
+        self.state = copy.copy(self.mu)
 
-    def noise(self):
+    def sample(self):
+        """Update internal state and return it as a noise sample."""
         x = self.state
-        dx = self.theta * (self.mu - x) + self.sigma * np.random.randn(len(x))
+        dx = self.theta * (self.mu - x) + self.sigma * np.random.standard_normal(self.size)
         self.state = x + dx
-        return torch.tensor(self.state * self.scale).float()
+        return self.state
